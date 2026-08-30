@@ -1,0 +1,124 @@
+# =============================================================================
+# BallKnower Gridiron — .gitignore
+#
+# The governing rule: everything regenerable stays out, everything that is
+# EVIDENCE goes in. The forecast ledger under content/football/ is the whole
+# point of the repo being public — it is a timestamped, third-party-attested
+# record. It must never be ignored, so there are explicit un-ignore rules for
+# it at the bottom.
+# =============================================================================
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- Virtual environments ----------------------------------------------------
+venv/
+env/
+ENV/
+.venv/
+.env/
+env.bak/
+venv.bak/
+
+# --- Secrets -----------------------------------------------------------------
+# .env holds API keys (ESPN/QBR endpoints, any odds provider). Never commit it.
+# Commit .env.example instead so a fresh clone knows which vars to set.
+.env
+.env.local
+.env.*.local
+*.key
+secrets.json
+credentials.json
+
+# --- Data caches (large, regenerable) ----------------------------------------
+# The PBP parquet cache is ~13 seasons x ~50k plays x ~370 columns. That is
+# hundreds of megabytes and would blow past GitHub's file-size limits, and it
+# re-downloads from nflverse on demand anyway.
+data_cache/
+!data_cache/.gitkeep
+*.parquet
+*.feather
+
+# Cached nflverse schedule CSVs — regenerable in seconds.
+nfl_schedule_*.csv
+
+# --- Trained model artifacts (large, regenerable, and pickles) ---------------
+# Deliberately ignored rather than committed. Pickles are version-fragile
+# (a scikit-learn or xgboost upgrade can make them unloadable) and they are
+# reproducible from `train_football_model.py` given the same data and settings.
+# What actually pins a forecast to a model is `config_hash` + `code_commit`
+# in the ledger rows, not the binary itself.
+models_artifacts/
+!models_artifacts/.gitkeep
+*.pkl
+*.pickle
+*.joblib
+
+# --- Logs and diagnostics ----------------------------------------------------
+logs/
+!logs/.gitkeep
+*.log
+# Diagnostic plots and audit dumps are re-derivable from a retrain.
+*.png
+v5_audit.csv
+blend_sweep*.csv
+
+# --- Notebooks ---------------------------------------------------------------
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# --- OS / editor -------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- Streamlit ---------------------------------------------------------------
+.streamlit/secrets.toml
+
+# =============================================================================
+# THE LEDGER — explicitly NOT ignored
+#
+# `*.png` and the cache rules above could otherwise sweep up files under
+# content/. These negations make the published record un-ignorable by accident.
+# If a future rule ever shadows one of these, the ledger silently stops being
+# committed and the track record quietly develops a hole — which is exactly the
+# failure the ledger exists to make impossible.
+# =============================================================================
+!content/
+!content/**
+!content/football/**/ledger/
+!content/football/**/ledger/forecasts.jsonl
+!content/football/**/ledger/manifest.json
+!content/football/**/newsletter.md
+!content/football/**/newsletter.html
+!content/football/**/blog.md
+!content/football/**/blog.html
+!content/football/**/predictions.json
