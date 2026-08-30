@@ -1,0 +1,51 @@
+# BallKnower Insights + Hoops + Gridiron — Python dependencies
+# -----------------------------------------------------------------------------
+# Loose minimum pins so pip can pick wheels that exist for your Python version
+# (especially important on Python 3.13/3.14 where strict older pins may have
+# no pre-built wheel and force a slow source build — or fail outright).
+#
+# Tested on Python 3.11, 3.12, and 3.13. Python 3.14 should work for the
+# pure-Python deps; if xgboost or scipy (a sklearn dep) don't yet ship a 3.14
+# wheel on your platform, either drop down to 3.12 in your venv or let pip
+# build from source.
+
+# Core data + ML
+pandas>=2.1
+numpy>=1.26
+scikit-learn>=1.4
+xgboost>=2.0
+
+# Web UI
+streamlit>=1.31
+
+# HTTP + env
+requests>=2.31
+# python-dotenv is OPTIONAL — settings.py loads cleanly without it. Install
+# it if you want .env file support; skip it if you set env vars directly.
+python-dotenv>=1.0
+
+# NBA data (ballknower_hoops package)
+nba_api>=1.4
+
+# NFL data (ballknower_gridiron package)
+# nflreadpy is the official nflverse Python port. It replaced `nfl_data_py`
+# (which was archived September 25, 2025). Uses Polars natively but exposes
+# .to_pandas() everywhere, so our loaders can return pandas DataFrames as
+# usual. Wraps the same nflverse R datasets: schedules, play-by-play,
+# weekly/season player stats, depth charts, rosters, NextGen, PFR advstats.
+nflreadpy>=0.1.0
+# polars is nflreadpy's native dataframe; we let nflreadpy choose the
+# version it needs, but pin a compatible floor.
+polars>=0.20
+# pyarrow lets nflreadpy cache parquet files (small + fast).
+pyarrow>=14.0
+
+# Markdown export for the backtest CLI (--markdown flag uses DataFrame.to_markdown)
+tabulate>=0.9
+
+# Notebook (only needed to open tennis_model.ipynb interactively)
+jupyter>=1.0
+ipykernel>=6.29
+
+# Optional helpers
+tqdm>=4.66

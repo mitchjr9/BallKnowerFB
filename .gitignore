@@ -122,3 +122,10 @@ Thumbs.db
 !content/football/**/blog.md
 !content/football/**/blog.html
 !content/football/**/predictions.json
+
+# Sibling BallKnower packages that have their own git repos.
+# Nested repos get staged as gitlinks (mode 160000) — a bare commit SHA that
+# clones can't resolve, so the directory would appear empty to anyone who
+# cloned this repo. Excluded rather than made a submodule: these are separate
+# projects that happen to share a parent folder, not dependencies of this one.
+ballknower_fantasy/

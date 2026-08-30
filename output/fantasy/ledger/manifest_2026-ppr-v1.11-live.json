@@ -1,0 +1,23 @@
+{
+  "schema_version": "bk-forecast-1",
+  "batch": "2026-ppr-v1.11-live",
+  "emitter": "ballknower_fantasy",
+  "generated_ts": "2026-08-30T04:49:37+00:00",
+  "record_count": 1172,
+  "chain_head": "10994dce1a077b47806129e245cbb2cd915a55bdd385502c9d21a5ae5e3e530b",
+  "code_commit": "eaf2a87",
+  "config_hash": "4ad92faf10aee1a5",
+  "provenance_counts": {
+    "live": 1172
+  },
+  "family_counts": {
+    "distributional": 586,
+    "probabilistic": 586
+  },
+  "tier_counts": {
+    "Lean": 23,
+    "Lock": 10,
+    "Pass": 528,
+    "Strong": 25
+  }
+}
