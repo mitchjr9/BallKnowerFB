@@ -1,0 +1,24 @@
+{
+  "schema_version": "1",
+  "batch": "nfl-2026-09-12",
+  "emitter": "ballknower.gridiron",
+  "generated_ts": "2026-09-12T06:59:50+00:00",
+  "record_count": 28,
+  "chain_head": "fb298e2af72659046bf73dca382248358ed5fb7adeb3dbbd5fd0c0fcb169298f",
+  "code_commit": "d0dc218",
+  "config_hash": "7875dd95037d8a89",
+  "provenance_counts": {
+    "live": 28
+  },
+  "family_counts": {
+    "distributional": 14,
+    "probabilistic": 14
+  },
+  "tier_counts": {
+    "Lean": 6,
+    "Pass": 8
+  },
+  "depth_counts": {
+    "none": 14
+  }
+}
