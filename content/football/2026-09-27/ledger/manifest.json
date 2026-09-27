@@ -2,10 +2,10 @@
   "schema_version": "1",
   "batch": "nfl-2026-09-27",
   "emitter": "ballknower.gridiron",
-  "generated_ts": "2026-09-27T16:58:09+00:00",
+  "generated_ts": "2026-09-27T16:59:11+00:00",
   "record_count": 30,
-  "chain_head": "aae470037793b881dbc5f4de6cc8e9266b6211c0a0f1deff89bf1f6f290c7d8c",
-  "code_commit": "3d7ce9b",
+  "chain_head": "243956dc0dc8e0c6237d7ea46f1f24ae41e3dd227ad86e97ca9602d6b761cd20",
+  "code_commit": "ea29755",
   "config_hash": "7875dd95037d8a89",
   "provenance_counts": {
     "live": 30
