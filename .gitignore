@@ -129,3 +129,10 @@ Thumbs.db
 # cloned this repo. Excluded rather than made a submodule: these are separate
 # projects that happen to share a parent folder, not dependencies of this one.
 ballknower_fantasy/
+
+# Re-ignore OS junk inside content/. The ledger un-ignore rules above
+# (!content/**) otherwise pull it back in; the last matching rule wins.
+content/**/.DS_Store
+
+# Generated fantasy outputs — they belong to ballknower_fantasy, not this repo.
+output/
