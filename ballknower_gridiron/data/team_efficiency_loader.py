@@ -72,6 +72,7 @@ import numpy as np
 import pandas as pd
 
 from ballknower_gridiron.config.settings import settings
+from ballknower_gridiron.data.season_calendar import is_in_progress
 from ballknower_gridiron.utils.logging_utils import get_logger
 
 log = get_logger(__name__)
@@ -212,7 +213,9 @@ def load_pbp_for_seasons(
     n_downloaded = 0
     for season in seasons:
         cache_path = cache_dir / f"pbp_{season}.parquet"
-        if not force_refresh and cache_path.exists():
+        # In-progress season: always re-pull. A copy cached in Week 1 would
+        # otherwise freeze team EPA at Week 1 for the rest of the season.
+        if not force_refresh and cache_path.exists() and not is_in_progress(season):
             try:
                 df = pd.read_parquet(cache_path)
                 dfs.append(df)
@@ -223,7 +226,17 @@ def load_pbp_for_seasons(
                     "Cached PBP for season %d unreadable (%s) — re-downloading.",
                     season, exc,
                 )
-        df = _download_one_season_pbp(season)
+        try:
+            df = _download_one_season_pbp(season)
+        except RuntimeError:
+            if cache_path.exists():
+                log.warning("PBP refresh for season %d failed; falling back to "
+                            "the cached copy, which may be missing recent weeks.",
+                            season)
+                dfs.append(pd.read_parquet(cache_path))
+                n_from_cache += 1
+                continue
+            raise
         try:
             df.to_parquet(cache_path, index=False)
         except Exception as exc:  # noqa: BLE001 — cache write failure is non-fatal

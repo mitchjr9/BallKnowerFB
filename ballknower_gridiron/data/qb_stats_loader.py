@@ -31,6 +31,7 @@ from typing import List, Optional
 import pandas as pd
 
 from ballknower_gridiron.config.settings import settings
+from ballknower_gridiron.data.season_calendar import is_in_progress
 from ballknower_gridiron.data.espn_qbr_loader import load_espn_qbr_for_seasons
 from ballknower_gridiron.utils.logging_utils import get_logger
 
@@ -161,7 +162,8 @@ def _fetch_player_stats_season(
     Returns ALL positions; QB filtering happens downstream.
     """
     path = _cache_path(season, "player_stats_season")
-    if path.exists() and not force_refresh:
+    # In-progress season is never served from cache (see season_calendar).
+    if path.exists() and not force_refresh and not is_in_progress(season):
         log.debug("Player stats cache hit: %s", path.name)
         return pd.read_csv(path, low_memory=False)
 
@@ -373,7 +375,8 @@ def load_depth_charts(
     timestamp instead. This loader handles both schemas.
     """
     path = _depth_chart_cache_path(season)
-    if path.exists() and not force_refresh:
+    # In-progress season is never served from cache (see season_calendar).
+    if path.exists() and not force_refresh and not is_in_progress(season):
         log.debug("Depth chart cache hit: %s", path.name)
         return pd.read_csv(path, low_memory=False)
 
@@ -525,7 +528,8 @@ def _fetch_player_stats_weekly(
     nflreadpy.load_player_stats(summary_level="week").
     """
     path = _cache_path(season, "player_stats_weekly")
-    if path.exists() and not force_refresh:
+    # In-progress season is never served from cache (see season_calendar).
+    if path.exists() and not force_refresh and not is_in_progress(season):
         log.debug("Weekly player stats cache hit: %s", path.name)
         return pd.read_csv(path, low_memory=False)
 

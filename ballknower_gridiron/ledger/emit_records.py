@@ -249,6 +249,10 @@ class ForecastRecord:
     prev_hash: Optional[str] = None
     row_hash: str = ""
     supersedes: Optional[str] = None
+    # Why this row replaces an earlier one. Required whenever `supersedes` is
+    # set: a re-issue with no stated reason cannot be distinguished from
+    # quietly swapping a forecast you no longer like.
+    supersede_reason: Optional[str] = None
 
     # resolution (written later, by the grader — never by this package)
     resolution_status: str = "pending"
@@ -320,6 +324,13 @@ class ForecastRecord:
 
         if self.provenance not in ("live", "backfill", "replay"):
             raise LedgerError(f"bad provenance {self.provenance!r}")
+
+        if self.supersedes and not self.supersede_reason:
+            raise LedgerError(
+                "supersedes is set without supersede_reason — an unexplained "
+                "re-issue is indistinguishable from cherry-picking")
+        if self.supersede_reason and not self.supersedes:
+            raise LedgerError("supersede_reason set without supersedes")
 
         if self.forecast_id != self.compute_id():
             raise LedgerError("forecast_id does not match its content tuple")

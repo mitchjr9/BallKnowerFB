@@ -56,5 +56,22 @@ def _configure_root_logger() -> None:
 
 
 def get_logger(name: Optional[str] = None) -> logging.Logger:
+    """
+    Return a logger inside the `ballknower_gridiron` namespace.
+
+    Handlers live only on the `ballknower_gridiron` logger. A logger created
+    under any other name — `get_logger("weekly_football_pipeline")`, say — has
+    no handler, so its INFO lines are silently discarded and only WARNING and
+    above reach stderr via Python's last-resort handler. That is exactly how the
+    pipeline's resolved-config banner went dark: it logs at INFO, so on every
+    correctly configured run it printed nothing at all, and the one thing it
+    existed to confirm was never shown. Prefixing bare names closes the gap for
+    every caller at once instead of relying on each module to spell its name.
+    """
     _configure_root_logger()
-    return logging.getLogger(name or "ballknower_gridiron")
+    root = "ballknower_gridiron"
+    if not name:
+        return logging.getLogger(root)
+    if name != root and not name.startswith(root + "."):
+        name = f"{root}.{name}"
+    return logging.getLogger(name)

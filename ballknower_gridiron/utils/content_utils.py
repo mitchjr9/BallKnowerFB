@@ -152,6 +152,9 @@ class GamePrediction:
     # on gameday morning for a 1pm kickoff.
     event_start_ts: Optional[str] = None
     game_id: Optional[str] = None
+    # Which model state produced this forecast (refresh timestamp, last game
+    # absorbed, weight hashes). Set by the pipeline; recorded by the ledger.
+    state_prov: Dict = field(default_factory=dict)
 
     @classmethod
     def from_probs(

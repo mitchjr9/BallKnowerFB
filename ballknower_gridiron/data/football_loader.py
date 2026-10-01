@@ -102,8 +102,13 @@ def _fetch_schedules(
     Polars is the native format; we convert to pandas immediately to
     match the basketball codebase.
     """
+    from ballknower_gridiron.data.season_calendar import (
+        any_in_progress, current_nfl_season,
+    )
+
     path = _cache_path(seasons)
-    if path.exists() and not force_refresh:
+    live = any_in_progress(seasons)
+    if path.exists() and not force_refresh and not live:
         log.debug("Schedule cache hit: %s", path.name)
         return pd.read_csv(path, low_memory=False)
 
@@ -114,11 +119,24 @@ def _fetch_schedules(
             "nflreadpy is not installed. Run `pip install -r requirements.txt`."
         ) from exc
 
-    log.info("Fetching NFL schedules for seasons %s …", seasons)
-    df_pl = nfl.load_schedules(seasons=seasons)
+    log.info("Fetching NFL schedules for seasons %s%s …", seasons,
+             " (in-progress season — cache bypassed)" if live and path.exists()
+             and not force_refresh else "")
+    try:
+        df_pl = nfl.load_schedules(seasons=seasons)
+    except Exception as exc:  # noqa: BLE001 — offline must degrade, not crash
+        if path.exists():
+            log.warning("Schedule refresh failed (%s); falling back to cached "
+                        "%s — results and lines may be stale.", exc, path.name)
+            return pd.read_csv(path, low_memory=False)
+        raise
     df = df_pl.to_pandas() if hasattr(df_pl, "to_pandas") else df_pl
     if df.empty:
-        log.warning("nflreadpy returned no schedule data for %s.", seasons)
+        # A season that hasn't been published yet is expected, not a problem.
+        if all(int(s) > current_nfl_season() for s in seasons):
+            log.debug("No schedule published yet for %s.", seasons)
+        else:
+            log.warning("nflreadpy returned no schedule data for %s.", seasons)
         return df
 
     # Persist immediately so we can iterate on downstream code without

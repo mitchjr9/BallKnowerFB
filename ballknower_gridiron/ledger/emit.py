@@ -80,6 +80,15 @@ def _margin_sigma(margin_version: str = "v5") -> float:
     return DEFAULT_MARGIN_SIGMA
 
 
+def existing_batch_status(jsonl: Path, new_ids: List[str]) -> Tuple[str, List[dict]]:
+    """'absent', 'identical' (same forecast_ids), or 'different'."""
+    if not jsonl.exists():
+        return "absent", []
+    existing = [json.loads(l) for l in jsonl.read_text().splitlines() if l.strip()]
+    same = sorted(r["forecast_id"] for r in existing) == sorted(new_ids)
+    return ("identical" if same else "different"), existing
+
+
 def records_for_game(g: dict, *, asof_ts: str, committed_ts: str,
                      provenance: str, sigma: float, wp_version: str,
                      margin_version: str, blend_elo: Optional[float],
@@ -152,11 +161,46 @@ def main(argv: Optional[List[str]] = None) -> int:
                          "(default: read from the slate)")
     ap.add_argument("--margin-version", default="v5",
                     help="Margin model whose RMSE supplies sigma (default: v5).")
+    ap.add_argument("--supersedes", default=None, metavar="BATCH_DATE",
+                    help="Re-issue this slate, marking each new row as "
+                         "superseding the matching row in an earlier batch "
+                         "(e.g. --supersedes 2026-09-07). Both rows stay in the "
+                         "ledger forever; nothing is edited or deleted. Only "
+                         "rows whose event has NOT started can be superseded.")
+    ap.add_argument("--supersede-reason", default=None,
+                    help="Required with --supersedes. Recorded on every "
+                         "superseding row so an auditor can see why.")
     args = ap.parse_args(argv)
 
     preds, out_dir = _load_predictions(args.date)
     if not preds:
         raise SystemExit("predictions.json is empty")
+
+    # ---- supersession index ------------------------------------------------
+    # Re-issuing is legitimate ONLY before the event starts and ONLY when fully
+    # recorded: the original row is never touched, the new row points back at it
+    # via `supersedes`, and the reason is stored alongside. That distinction is
+    # the whole ballgame — correcting a config error before kickoff is
+    # bookkeeping; swapping a forecast after a result is known is fraud, and the
+    # timestamps are what let a stranger tell the two apart.
+    supersede_index = {}
+    if args.supersedes:
+        if not args.supersede_reason:
+            raise SystemExit(
+                "--supersedes requires --supersede-reason. The reason is "
+                "written onto every superseding row; an unexplained re-issue is "
+                "indistinguishable from cherry-picking.")
+        old_path = (settings.project_root / "content" / "football"
+                    / args.supersedes / "ledger" / "forecasts.jsonl")
+        if not old_path.exists():
+            raise SystemExit(f"No batch to supersede at {old_path}")
+        for line in old_path.read_text().splitlines():
+            if line.strip():
+                old = json.loads(line)
+                key = (old["event_id"], old["market_type"])
+                supersede_index[key] = old
+        print(f"Superseding batch {args.supersedes}: "
+              f"{len(supersede_index)} prior row(s) available to replace.\n")
 
     asof = args.asof or preds[0].get("asof_ts") or now_iso()
     committed = now_iso()
@@ -175,6 +219,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                     provenance=args.provenance, sigma=sigma,
                     wp_version=wp_version, margin_version=args.margin_version,
                     blend_elo=blend_elo):
+                old = supersede_index.get((rec.event_id, rec.market_type))
+                if old is not None:
+                    rec.supersedes = old["forecast_id"]
+                    rec.supersede_reason = args.supersede_reason
                 rec.finalize(prev_hash)
                 prev_hash = rec.row_hash
                 records.append(rec)
@@ -186,10 +234,47 @@ def main(argv: Optional[List[str]] = None) -> int:
     ledger_dir = out_dir / "ledger"
     ledger_dir.mkdir(parents=True, exist_ok=True)
     jsonl = ledger_dir / "forecasts.jsonl"
+
+    # ---- never overwrite a batch ------------------------------------------
+    # A batch file is committed and pushed the moment it's written; its
+    # manifest chain_head is the attestation. Rewriting it — even with the same
+    # forecasts — replaces the committed_ts and chain head with new ones and
+    # makes the git history the only evidence of what was first published.
+    status, existing = existing_batch_status(jsonl, [r.forecast_id for r in records])
+    if status != "absent":
+        new_ids = sorted(r.forecast_id for r in records)
+        old_ids = sorted(r["forecast_id"] for r in existing)
+        if status == "identical":
+            print("=" * 66)
+            print(f"  FORECAST LEDGER — nfl-{args.date}")
+            print("=" * 66)
+            print(f"  Already emitted: all {len(new_ids)} forecasts in this batch "
+                  f"are identical to the ones")
+            print(f"  committed at {existing[0].get('committed_ts')}. Nothing "
+                  f"written — the original batch stands.")
+            return 0
+        added = set(new_ids) - set(old_ids)
+        raise SystemExit(
+            f"\n  ✗ REFUSED — {jsonl} already exists and this run would change "
+            f"it ({len(added)} forecast(s) differ).\n"
+            "    A committed batch is never rewritten. If the forecasts need to "
+            "change before kickoff,\n"
+            "    re-issue them explicitly under a new date folder with\n"
+            f"      --supersedes {args.date} --supersede-reason \"...\"\n"
+            "    so the original stays in the record beside its replacement.")
+
     jsonl.write_text("\n".join(r.to_json() for r in records) + "\n")
 
     manifest = build_manifest(records, batch_label=f"nfl-{args.date}",
                               blend_elo=blend_elo)
+    # Which state produced this batch. The validated weights are fixed, but
+    # they serve a different state every week, so weights alone no longer
+    # identify a forecast — the refresh timestamp and weight hashes together do.
+    manifest["model_state"] = {
+        "refreshed_at": preds[0].get("state_refreshed_at"),
+        "last_game_absorbed": preds[0].get("state_last_game"),
+        "weights_sha256": preds[0].get("weights_sha256") or {},
+    }
     (ledger_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
     print("=" * 66)
@@ -199,7 +284,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"  provenance      : {args.provenance}")
     print(f"  tiers           : {manifest['tier_counts']}")
     print(f"  data depth      : {manifest['depth_counts']}")
+    n_super = sum(1 for r in records if r.supersedes)
+    if n_super:
+        print(f"  superseding     : {n_super} row(s) from batch {args.supersedes}")
+        print(f"    reason        : {args.supersede_reason}")
     print(f"  asof_ts         : {asof}")
+    ms = manifest["model_state"]
+    print(f"  model state     : "
+          + (f"refreshed {ms['refreshed_at']} (through {ms['last_game_absorbed']})"
+             if ms["refreshed_at"] else
+             f"training state, never refreshed (through {ms['last_game_absorbed']})"))
     print(f"  committed_ts    : {committed}")
     print(f"  margin sigma    : {sigma:.2f} pts ({args.margin_version} holdout RMSE)")
     if manifest["chain_head"]:

@@ -104,14 +104,21 @@ class Settings:
     # "v2" = adds QB rating + QB-healthy toggle. ← current best
     # "v3" = v2 + team EPA + points/play efficiency.
     # "v4" = planned: weather, OL/DL/ST, international, skill stars.
-    active_model_version: str = os.getenv("NFL_MODEL_VERSION", "v2").lower()
+    # Default is the model the calibration work actually validated (best ECE
+    # 0.0352, best Brier, most high-confidence picks). It used to fall back to
+    # "v2", which meant a shell without NFL_MODEL_VERSION set silently published
+    # a slate under a model that was explicitly rejected. A fallback should be
+    # the safe choice, not an arbitrary one.
+    active_model_version: str = os.getenv("NFL_MODEL_VERSION", "v3.1").lower()
 
     # --- Inference defaults ------------------------------------------------
     # Default --blend-elo weight (analogous to NBA's setting). NFL has higher
     # variance per game, so ELO blending tends to help more than in NBA at
     # least until v3+ are tuned. We default to 0.50 = "trust model and ELO
     # equally" — re-tune after backtests.
-    default_blend_elo: float = float(os.getenv("NFL_BLEND_ELO_DEFAULT", "0.50"))
+    # 0.00 is the measured optimum from scripts/blend_sweep.py, not a guess:
+    # ECE 0.0352 at w=0 against 0.0866 at the old 0.50 default.
+    default_blend_elo: float = float(os.getenv("NFL_BLEND_ELO_DEFAULT", "0.00"))
 
     # --- NFL data ----------------------------------------------------------
     # How many seasons of history to pull. 12 takes us back to ~2014, after

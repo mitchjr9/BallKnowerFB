@@ -53,6 +53,7 @@ import numpy as np
 import pandas as pd
 
 from ballknower_gridiron.config.settings import settings
+from ballknower_gridiron.data.season_calendar import current_nfl_season
 from ballknower_gridiron.data.football_loader import get_upcoming_games
 from ballknower_gridiron.models.football_model_v2 import load_active_nfl_model
 from ballknower_gridiron.utils.content_utils import (
@@ -71,47 +72,147 @@ def _elo_baseline_probability(elo_home: float, elo_away: float, hca: float) -> f
     return 1.0 / (1.0 + 10 ** (-diff / 400.0))
 
 
-def _season_context(slate_seasons: List[int]) -> Tuple[str, Dict[str, int]]:
+# The configuration the calibration work actually validated. Anything else runs,
+# but says so loudly — a slate published under a fallback config is a slate whose
+# probabilities were never checked.
+PRODUCTION_WP_VERSION = "v3.1"
+PRODUCTION_BLEND_ELO = 0.00
+
+
+def _week_label(preds: List[GamePrediction]) -> Optional[str]:
     """
-    Return (asof_ts, {team: completed games this season}).
+    Human label for the slate, honest about multi-week spans.
 
-    `asof_ts` is the kickoff of the most recent COMPLETED game anywhere in the
-    schedule — the honest answer to "what is the newest result this forecast
-    could possibly have been built from". In Week 1 that is last season's Super
-    Bowl, which is correct and worth seeing in the ledger rather than papering
-    over with `now()`.
+    One week -> "2026 Week 1". Two or more -> "2026 Weeks 1-2", so a reader who
+    sees a team twice can tell immediately that they are looking at two weeks of
+    football rather than a broken model.
+    """
+    pairs = sorted({(p.season, p.week) for p in preds
+                    if p.season is not None and p.week is not None})
+    if not pairs:
+        return None
+    season = pairs[0][0]
+    weeks = sorted({w for s, w in pairs if s == season})
+    if len(pairs) != len(weeks):          # more than one season in the slate
+        return f"{pairs[0][0]}-{pairs[-1][0]}"
+    if len(weeks) == 1:
+        return f"{season} Week {weeks[0]}"
+    return f"{season} Weeks {weeks[0]}-{weeks[-1]}"
 
-    The games-played count is taken from the schedule rather than from model
-    internals, because it has to describe the *slate's* season specifically:
-    a team with 17 games last year and 0 this year has `data_depth == "none"`,
-    and reading a counter that still holds last season's tally is exactly the
-    bug that let a sibling package publish six Locks in a week where nobody had
-    played.
+
+def _print_config_banner(wp_version: Optional[str],
+                         margin_version: Optional[str],
+                         blend_elo_weight: Optional[float]) -> None:
+    """
+    Print the resolved configuration before predicting anything, and warn when
+    it is not the validated production config.
+
+    This exists because shell exports do not survive a new terminal session. A
+    run that silently fell back to the settings defaults produced a full public
+    slate under an unvalidated model, and nothing in the output made that
+    obvious until someone read the newsletter header. Resolved config is now the
+    first thing printed.
+    """
+    wp = wp_version or settings.active_model_version
+    blend = (blend_elo_weight if blend_elo_weight is not None
+             else settings.default_blend_elo)
+    log.info("─" * 62)
+    log.info("  RESOLVED CONFIG")
+    log.info("    win probability : %s", wp)
+    log.info("    margin          : %s", margin_version or "(none)")
+    log.info("    ELO blend       : %.2f", blend)
+    log.info("─" * 62)
+
+    problems = []
+    if wp.replace(".", "_") != PRODUCTION_WP_VERSION.replace(".", "_"):
+        problems.append(
+            f"win-probability model is {wp}, not the validated "
+            f"{PRODUCTION_WP_VERSION}")
+    if abs(blend - PRODUCTION_BLEND_ELO) > 1e-9:
+        problems.append(
+            f"ELO blend is {blend:.2f}, not the measured "
+            f"{PRODUCTION_BLEND_ELO:.2f}")
+    if problems:
+        log.warning("  ⚠ NOT the production configuration:")
+        for pr in problems:
+            log.warning("      - %s", pr)
+        log.warning("    Env vars do not persist across terminal sessions — put")
+        log.warning("    NFL_MODEL_VERSION and NFL_BLEND_ELO_DEFAULT in .env so")
+        log.warning("    every run picks them up. Continuing anyway.")
+        log.warning("─" * 62)
+
+
+class StaleStateError(RuntimeError):
+    """The model state has not absorbed games that have already finished."""
+
+
+def _state_context(wp_version: str, margin_version: Optional[str],
+                   slate_season: int, allow_stale: bool
+                   ) -> Tuple[str, Dict[str, int], Dict]:
+    """
+    Return (asof_ts, {team: games absorbed this season}, provenance).
+
+    Both numbers come from the model STATE, not from a separate read of the
+    schedule. That coupling is the point. `data_depth` exists to say how much
+    this season the ratings reflect — so it must count games the ratings have
+    actually absorbed, not games that happen to have been played. Counting from
+    the schedule while serving frozen ratings would lift the tier cap to
+    "Strong" on ratings that know nothing about the season. `asof_ts` is the
+    moment the state was built, which is exactly the information set the
+    forecast was made from.
+
+    Refuses to proceed if a finished game hasn't been absorbed, because every
+    forecast built on that state would silently ignore it.
     """
     from ballknower_gridiron.data.football_loader import load_nfl_games
+    from ballknower_gridiron.scripts.refresh_state import (
+        read_state_meta, unabsorbed_games,
+    )
 
-    games_played: Dict[str, int] = {}
-    asof_ts = now_utc_iso()
-    try:
-        hist = load_nfl_games(seasons_back=2, completed_only=True)
-    except Exception as exc:  # noqa: BLE001 — no history is survivable here
-        log.warning("Could not load completed games for asof/depth (%s); "
-                    "falling back to now() and depth=0.", exc)
-        return asof_ts, games_played
+    completed = load_nfl_games(seasons_back=1, completed_only=True)
+    completed = completed[completed["season"].astype(int) == int(slate_season)]
 
-    if not hist.empty:
-        latest = pd.to_datetime(hist["game_date"]).max()
-        if pd.notna(latest):
-            asof_ts = latest.tz_localize("UTC").isoformat() \
-                if latest.tzinfo is None else latest.isoformat()
+    stale = {}
+    for v in filter(None, [wp_version, margin_version]):
+        behind = unabsorbed_games(v, completed)
+        if not behind.empty:
+            stale[v] = behind
 
-        if slate_seasons:
-            cur = hist[hist["season"].astype(int) == int(slate_seasons[0])]
-            for col in ("home_team", "away_team"):
-                for team, n in cur[col].value_counts().items():
-                    games_played[str(team)] = games_played.get(str(team), 0) + int(n)
+    if stale:
+        lines = [f"{v}: {len(b)} finished game(s) not in its ratings "
+                 f"(latest {pd.to_datetime(b['game_date']).max().date()})"
+                 for v, b in stale.items()]
+        msg = ("Model state is behind the results:\n      "
+               + "\n      ".join(lines)
+               + "\n    Run first:  python -m ballknower_gridiron.scripts.refresh_state")
+        if not allow_stale:
+            raise StaleStateError(msg)
+        log.warning("⚠ %s", msg)
+        log.warning("  Continuing because --allow-stale-state was passed. These "
+                    "forecasts will ignore those games.")
 
-    return asof_ts, games_played
+    meta = read_state_meta(wp_version)
+    if meta:
+        asof_ts = meta["refreshed_at"]
+        games_played = {k: int(v) for k, v in meta.get("games_played", {}).items()}
+        provenance = {"state_refreshed_at": meta["refreshed_at"],
+                      "state_last_game": meta.get("last_game_absorbed"),
+                      "weights_sha256": meta.get("weights_sha256", {})}
+    else:
+        # Never refreshed: the state is the training state. Its information set
+        # ends at the last training game, and it has absorbed zero games of any
+        # season after that — which keeps data_depth honest at "none".
+        from ballknower_gridiron.scripts.refresh_state import (
+            load_bundle, training_cutoff,
+        )
+        cutoff = training_cutoff(load_bundle(wp_version))
+        asof_ts = (cutoff.tz_localize("UTC").isoformat() if cutoff is not None
+                   else now_utc_iso())
+        games_played = {}
+        provenance = {"state_refreshed_at": None,
+                      "state_last_game": str(cutoff.date()) if cutoff is not None else None,
+                      "weights_sha256": {}}
+    return asof_ts, games_played, provenance
 
 
 def now_utc_iso() -> str:
@@ -139,6 +240,9 @@ def predict_upcoming_slate(
     margin_version: Optional[str] = "v5",
     days_ahead: int = 10,
     blend_elo_weight: Optional[float] = None,
+    single_week: bool = True,
+    week: Optional[int] = None,
+    allow_stale_state: bool = False,
 ) -> List[GamePrediction]:
     """
     Run both models over the upcoming game slate.
@@ -155,7 +259,12 @@ def predict_upcoming_slate(
         of the following week).
     blend_elo_weight
         Blend weight for the ELO baseline against the model's probability.
-        Defaults to settings.default_blend_elo (0.50 for NFL).
+        Defaults to settings.default_blend_elo.
+    single_week
+        Restrict the slate to one NFL week (default). A day-count window can
+        straddle a week boundary and pull in next week's Thursday game.
+    week
+        Force a specific week number instead of the earliest in the window.
     """
     wp_version = wp_version or settings.active_model_version
     blend_elo_weight = (
@@ -182,6 +291,35 @@ def predict_upcoming_slate(
         log.warning("No upcoming games in the next %d days.", days_ahead)
         return []
 
+    # ---- scope to ONE NFL week ------------------------------------------
+    # A day-count window does not respect week boundaries. With days_ahead
+    # large enough to reach the following Thursday, next week's kickoff game
+    # lands in a slate headed "Week 1" — and because that game involves teams
+    # who also played in Week 1, a reader sees the same team listed twice
+    # against different opponents and reasonably concludes the model is broken.
+    # The games are real; the SCOPE was wrong. Default to the earliest week in
+    # the window, which is the one about to be played.
+    if single_week and "week" in schedule.columns:
+        weeks_in_window = sorted({int(w) for w in schedule["week"].dropna().unique()})
+        seasons_in_window = sorted({int(s) for s in schedule["season"].dropna().unique()})
+        target_week = int(week) if week is not None else weeks_in_window[0]
+        target_season = seasons_in_window[0]
+        before = len(schedule)
+        schedule = schedule[
+            (schedule["week"].astype(int) == target_week)
+            & (schedule["season"].astype(int) == target_season)
+        ].reset_index(drop=True)
+        if len(schedule) != before:
+            dropped = before - len(schedule)
+            log.info(
+                "Scoped slate to %d Week %d: kept %d game(s), dropped %d "
+                "belonging to other week(s) %s. Pass --all-weeks to keep them.",
+                target_season, target_week, len(schedule), dropped,
+                [w for w in weeks_in_window if w != target_week])
+        if schedule.empty:
+            log.warning("No games left after scoping to week %s.", target_week)
+            return []
+
     # ---- season roll (train/serve skew fix) -------------------------------
     # Off-season ELO regression only fires inside update_game, which is only
     # called while fitting. A model trained through February and asked about
@@ -201,7 +339,13 @@ def predict_upcoming_slate(
     # asof_ts is the latest data the model was permitted to see. Stamping it on
     # every row is what lets the ledger enforce the leakage invariant instead of
     # trusting that we ran the pipeline at a sensible time.
-    asof_ts, games_played = _season_context(slate_seasons)
+    asof_ts, games_played, state_prov = _state_context(
+        wp_version, margin_version,
+        slate_seasons[0] if slate_seasons else current_nfl_season(),
+        allow_stale_state)
+    log.info("  model state as of : %s (last game absorbed: %s)",
+             state_prov["state_refreshed_at"] or "training — never refreshed",
+             state_prov["state_last_game"])
 
     log.info("Predicting %d upcoming games …", len(schedule))
     hca = settings.elo_hca
@@ -271,6 +415,7 @@ def predict_upcoming_slate(
             **extras,
         )
         pred.asof_ts = asof_ts
+        pred.state_prov = state_prov
         pred.event_start_ts = kickoff_ts
         pred.game_id = game_id
 
@@ -316,18 +461,26 @@ def run_weekly_pipeline(
     margin_version: Optional[str] = "v5",
     days_ahead: int = 10,
     blend_elo_weight: Optional[float] = None,
+    single_week: bool = True,
+    week: Optional[int] = None,
     output_dir: Optional[Path] = None,
     formats: Tuple[str, ...] = ("md", "html"),
+    allow_stale_state: bool = False,
 ) -> dict:
     """
     Run the full weekly pipeline and write output files. Returns paths
     of written files keyed by format.
     """
+    _print_config_banner(wp_version, margin_version, blend_elo_weight)
+
     preds = predict_upcoming_slate(
         wp_version=wp_version,
         margin_version=margin_version,
         days_ahead=days_ahead,
         blend_elo_weight=blend_elo_weight,
+        single_week=single_week,
+        week=week,
+        allow_stale_state=allow_stale_state,
     )
 
     today = date_cls.today().isoformat()
@@ -338,14 +491,10 @@ def run_weekly_pipeline(
     log.info("Writing newsletter outputs to %s", out_dir)
 
     # Determine week label from predictions (most common week in the slate)
-    week_label = None
-    if preds:
-        weeks = [p.week for p in preds if p.week is not None]
-        seasons = [p.season for p in preds if p.season is not None]
-        if weeks and seasons:
-            most_common_week = max(set(weeks), key=weeks.count)
-            most_common_season = max(set(seasons), key=seasons.count)
-            week_label = f"{most_common_season} Week {most_common_week}"
+    # Label from the FULL set of weeks present, not the modal one. Taking the
+    # most common week silently mislabels a slate that spans a boundary — the
+    # exact failure that put a Week 2 game under a "Week 1" heading.
+    week_label = _week_label(preds)
 
     actual_wp = wp_version or settings.active_model_version
     actual_blend = (blend_elo_weight if blend_elo_weight is not None
@@ -398,6 +547,12 @@ def run_weekly_pipeline(
         d["wp_version"] = actual_wp
         d["margin_version"] = margin_version
         d["blend_elo_weight"] = actual_blend
+        # Which state produced this forecast. Weights alone don't identify a
+        # forecast any more — the same validated weights serve a different
+        # state every week — so the ledger needs both.
+        d["state_refreshed_at"] = p.state_prov.get("state_refreshed_at")
+        d["state_last_game"] = p.state_prov.get("state_last_game")
+        d["weights_sha256"] = p.state_prov.get("weights_sha256")
         # event_start_ts / game_id already live on the record (set at predict
         # time from the schedule row), so no re-join is needed here.
         payload.append(d)
@@ -471,6 +626,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Override output directory.",
     )
     parser.add_argument(
+        "--all-weeks", action="store_true",
+        help="Keep every week the date window touches. Default is to scope the "
+             "slate to a single NFL week so a Week 2 game never lands in a "
+             "Week 1 newsletter.",
+    )
+    parser.add_argument(
+        "--allow-stale-state", action="store_true",
+        help="Generate even if finished games haven't been folded into the "
+             "ratings. The default is to refuse, because every forecast would "
+             "silently ignore those games. Run refresh_state instead.",
+    )
+    parser.add_argument(
+        "--week", type=int, default=None,
+        help="Force a specific week number instead of the earliest in the window.",
+    )
+    parser.add_argument(
         "--formats", nargs="+", default=["md", "html"],
         choices=["md", "html"],
         help="Output formats to generate (default: both).",
@@ -480,6 +651,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     margin_version = None if args.no_margins else (args.margin_version or None)
 
     log.info("=== BallKnower Gridiron: Weekly Pipeline ===")
+    try:
+        return _main_run(args, margin_version)
+    except StaleStateError as exc:
+        print(f"\n  ✗ REFUSED — {exc}\n")
+        return 1
+
+
+def _main_run(args, margin_version) -> int:
     log.info("Disclaimer: outputs are for entertainment & educational use only.")
     written = run_weekly_pipeline(
         wp_version=args.wp_version,
@@ -488,6 +667,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         blend_elo_weight=args.blend_elo,
         output_dir=args.output_dir,
         formats=tuple(args.formats),
+        single_week=not args.all_weeks,
+        week=args.week,
+        allow_stale_state=args.allow_stale_state,
     )
     for fmt, path in written.items():
         log.info("  [%s] %s", fmt, path)
