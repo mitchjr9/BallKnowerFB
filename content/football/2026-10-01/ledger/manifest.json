@@ -1,0 +1,34 @@
+{
+  "schema_version": "1",
+  "batch": "nfl-2026-10-01",
+  "emitter": "ballknower.gridiron",
+  "generated_ts": "2026-10-01T23:31:43+00:00",
+  "record_count": 32,
+  "chain_head": "4a3bb14cfff0d8b7a2b241b50488f39ca3b0cdb4eb92206c13c155ab64dd9bc0",
+  "code_commit": "c2be1ad",
+  "config_hash": "7875dd95037d8a89",
+  "provenance_counts": {
+    "live": 32
+  },
+  "family_counts": {
+    "distributional": 16,
+    "probabilistic": 16
+  },
+  "tier_counts": {
+    "Lean": 3,
+    "Pass": 9,
+    "Strong": 4
+  },
+  "depth_counts": {
+    "thin": 16
+  },
+  "model_state": {
+    "refreshed_at": "2026-10-01T23:30:35+00:00",
+    "last_game_absorbed": "2026-09-28",
+    "weights_sha256": {
+      "model.pkl": "8e36957b122acf1d72122d592193539828018445de43b764e8cda44025278d02",
+      "scaler.pkl": "1c2bbca984efe9cc3fae333e1f64fb11a257d54ec6562249d4637de6836461d0",
+      "metadata.json": "50f5bc99bd7f4b3ba5136486e4cfc305a43e7adce08e39047d4ad09f15473154"
+    }
+  }
+}
